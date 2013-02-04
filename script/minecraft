@@ -1,0 +1,220 @@
+#!/bin/bash
+# /etc/init.d/minecraft
+# version 0.3.2 2011-01-27 (YYYY-MM-DD)
+
+### BEGIN INIT INFO
+# Provides:   minecraft
+# Required-Start: $local_fs $remote_fs
+# Required-Stop:  $local_fs $remote_fs
+# Should-Start:   $network
+# Should-Stop:    $network
+# Default-Start:  2 3 4 5
+# Default-Stop:   0 1 6
+# Short-Description:    Minecraft server
+# Description:    Starts the minecraft server
+### END INIT INFO
+
+#Settings
+SERVICE='forge_latest.zip'
+USERNAME="minecraft"
+MCPATH='/home/minecraft/minecraft'
+CRASHLOG_DB_PATH='/home/pahimar/Dropbox/PahiCraft/Crash\ Logs/Server/'
+JAVA_HOME='/home/minecraft/jrockit'
+CPU_COUNT=4
+MEMORY_OPTS='-Xmx8G -Xms8G'
+JAVA_OPTIONS='-XX:FlightRecorderOptions=defaultrecording=true,disk=true,repository=/home/minecraft/jfr/,maxage=30m,settings=profile'
+JMX_OPTIONS='-Dcom.sun.management.jmxremote -Dcom.sun.management.jmxremote.ssl=false -Dcom.sun.management.jmxremote.port=1100'
+#JAVA_OPTIONS='-XX:FlightRecorderOptions=defaultrecording=true,disk=true,repository=/home/minecraft/jfr/,maxage=30m,settings=profile'
+# cpw changes: Xmx and Xms should NEVER differ. Configure CMS a bit better.
+#INVOCATION="${JAVA_HOME}/bin/java -Xmx4096M -Xms4096M -XX:+UseG1GC -XX:+UseStringCache -XX:+AggressiveOpts -XX:-UseCompressedOops -jar forge_latest.zip nogui"
+#INVOCATION="${JAVA_HOME}/bin/java -Xmx4096M -Xms4096M ${JAVA_OPTIONS} -jar forge_latest.zip nogui"
+#INVOCATION="${JAVA_HOME}/bin/java -Xmx2048M -Xms2048M -Xgc:pausetime -Xns:1024M ${JAVA_OPTIONS} -jar forge_latest.zip nogui"
+INVOCATION="${JAVA_HOME}/bin/java ${MEMORY_OPTS} ${JAVA_OPTIONS} ${JMX_OPTIONS} -jar forge_latest.zip nogui"
+BACKUPPATH='/home/minecraft/backup'
+BACKUPDIR=`date +%b_%Y`
+CONSOLELOG='/home/minecraft/console.log'
+
+ME=`whoami`
+as_user() {
+  if [ $ME == $USERNAME ] ; then
+    bash -c "$1"
+  else
+    su - $USERNAME -c "$1"
+  fi
+}
+
+is_running() {
+	if ps ax | grep -v grep | grep java | grep -v -i SCREEN | grep $SERVICE > /dev/null
+	then
+		return 0
+	else
+		return 1
+	fi
+}
+
+mc_start() {
+  if is_running
+  then
+    echo "Tried to start but $SERVICE was already running!"
+    return 1
+  else
+    echo "$SERVICE was not running... starting."
+    cd $MCPATH
+    as_user "cd $MCPATH && screen -dmS minecraft bash -c '$INVOCATION 2>&1 | tee $CONSOLELOG'"
+    sleep 7
+    if is_running
+    then
+      echo "$SERVICE is now running."
+      return 0
+    else
+      echo "Could not start $SERVICE."
+      return 1
+    fi
+  fi
+}
+
+mc_startmonitor() {
+  echo "started monitor"
+  as_user "/usr/bin/daemon --name=minecraft_checkserver -- /home/minecraft/jrockit/bin/java -cp /home/minecraft/CheckServer CheckServer server-address server-port"
+}
+
+mc_saveoff() {
+        if is_running
+	then
+		echo "$SERVICE is running... suspending saves"
+		as_user "screen -p 0 -S minecraft -X eval 'stuff \"say SERVER BACKUP STARTING. Server going readonly...\"\015'"
+                as_user "screen -p 0 -S minecraft -X eval 'stuff \"save-off\"\015'"
+                as_user "screen -p 0 -S minecraft -X eval 'stuff \"save-all\"\015'"
+                sync
+		sleep 10
+	else
+                echo "$SERVICE was not running. Not suspending saves."
+	fi
+}
+
+mc_saveon() {
+        if is_running
+	then
+		echo "$SERVICE is running... re-enabling saves"
+                as_user "screen -p 0 -S minecraft -X eval 'stuff \"save-on\"\015'"
+                as_user "screen -p 0 -S minecraft -X eval 'stuff \"say SERVER BACKUP ENDED. Server going read-write...\"\015'"
+	else
+                echo "$SERVICE was not running. Not resuming saves."
+	fi
+}
+
+mc_kill() {
+	pid=`ps ax | grep -v grep | grep java | grep -i SCREEN | grep $SERVICE | awk '{ print $1 }'`
+
+	if [ -z $pid ]; then
+		echo "unable to retrieve pid"
+	else
+		echo "killing process with pid $pid"
+		kill $pid
+		sleep 2
+
+		if is_running; then
+			echo "$SERVICE could not be killed... still running"
+		else
+			echo "$SERVICE killed"
+		fi
+	fi
+}
+
+mc_stop() {
+	if is_running
+        then
+                echo "$SERVICE is running... stopping."
+
+                as_user "screen -p 0 -S minecraft -X eval 'stuff \"say SERVER SHUTTING DOWN IN 10 SECONDS. Saving map...\"\015'"
+                as_user "screen -p 0 -S minecraft -X eval 'stuff \"save-all\"\015'"
+                sleep 10
+                as_user "screen -p 0 -S minecraft -X eval 'stuff \"stop\"\015'"
+                sleep 12
+
+        else
+                echo "$SERVICE was not running."
+        fi
+        if is_running
+        then
+                echo "$SERVICE could not be shut down cleanly... still running."
+		mc_kill
+        else
+                echo "$SERVICE is shut down."
+        fi
+}
+
+mc_stopmonitor() {
+        as_user "/usr/bin/daemon --name=minecraft_checkserver --stop"
+}
+
+mc_backup() {
+	echo "Backing up minecraft world"
+
+	[ -d $BACKUPPATH/$BACKUPDIR ] || as_user "mkdir $BACKUPPATH/$BACKUPDIR"
+
+	as_user "rdiff-backup $MCPATH $BACKUPPATH/$BACKUPDIR"
+
+	echo "Backup complete"
+}
+
+mc_execservercmd() {
+	if is_running
+        then
+		as_user "screen -p 0 -S minecraft -X eval 'stuff \"$1\"\015'"
+	else
+		echo "$SERVICE was not running. Not executing command."
+	fi
+}
+
+mc_dumpcrashlogs() {
+	if is_running
+	then
+		as_user "cp $MCPATH/crash-reports/* $CRASHLOG_DB_PATH"
+		as_user "mv $MCPATH/crash-reports/* $MCPATH/crash-reports.archive/"
+	fi
+}
+
+#Start-Stop here
+case "$1" in
+  start)
+    if mc_start
+    then
+      mc_startmonitor
+    fi
+    ;;
+  stop)
+    mc_stopmonitor
+    mc_stop
+    ;;
+  restart)
+    mc_stop
+    mc_start
+    ;;
+  backup)
+    mc_saveoff
+    mc_backup
+    mc_saveon
+    ;;
+  execservercmd)
+    mc_execservercmd "$2"
+    ;;
+  dumpcrashlogs)
+    mc_dumpcrashlogs
+    ;;
+  status)
+    if is_running
+    then
+      echo "$SERVICE is running."
+    else
+      echo "$SERVICE is not running."
+    fi
+    ;;
+
+  *)
+  echo "Usage: /etc/init.d/minecraft {start|stop|restart|backup|execservercmd|dumpcrashlogs|status}"
+  exit 1
+  ;;
+esac
+
+exit 0
