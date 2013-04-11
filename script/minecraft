@@ -14,164 +14,220 @@
 # Description:    Starts the minecraft server
 ### END INIT INFO
 
-#Settings
-SERVICE='forge_latest.zip'
-USERNAME="minecraft"
-MCPATH='/home/minecraft/minecraft'
-CRASHLOG_DB_PATH='/home/pahimar/Dropbox/PahiCraft/Crash\ Logs/Server/'
-JAVA_HOME='/home/minecraft/jrockit'
-CPU_COUNT=4
-MEMORY_OPTS='-Xmx8G -Xms8G'
-JAVA_OPTIONS='-XX:FlightRecorderOptions=defaultrecording=true,disk=true,repository=/home/minecraft/jfr/,maxage=30m,settings=profile'
-JMX_OPTIONS='-Dcom.sun.management.jmxremote -Dcom.sun.management.jmxremote.ssl=false -Dcom.sun.management.jmxremote.port=1100'
-#JAVA_OPTIONS='-XX:FlightRecorderOptions=defaultrecording=true,disk=true,repository=/home/minecraft/jfr/,maxage=30m,settings=profile'
-# cpw changes: Xmx and Xms should NEVER differ. Configure CMS a bit better.
-#INVOCATION="${JAVA_HOME}/bin/java -Xmx4096M -Xms4096M -XX:+UseG1GC -XX:+UseStringCache -XX:+AggressiveOpts -XX:-UseCompressedOops -jar forge_latest.zip nogui"
-#INVOCATION="${JAVA_HOME}/bin/java -Xmx4096M -Xms4096M ${JAVA_OPTIONS} -jar forge_latest.zip nogui"
-#INVOCATION="${JAVA_HOME}/bin/java -Xmx2048M -Xms2048M -Xgc:pausetime -Xns:1024M ${JAVA_OPTIONS} -jar forge_latest.zip nogui"
-INVOCATION="${JAVA_HOME}/bin/java ${MEMORY_OPTS} ${JAVA_OPTIONS} ${JMX_OPTIONS} -jar forge_latest.zip nogui"
-BACKUPPATH='/home/minecraft/backup'
-BACKUPDIR=`date +%b_%Y`
-CONSOLELOG='/home/minecraft/console.log'
+# Settings start
+USERNAME="<username>"
+JMXPORT=<jmx port>
 
-ME=`whoami`
-as_user() {
-  if [ $ME == $USERNAME ] ; then
-    bash -c "$1"
-  else
-    su - $USERNAME -c "$1"
-  fi
-}
+SERVICE='forge_latest.zip'
+MCPATH="/home/$USERNAME/minecraft"
+BACKUPPATH="/home/$USERNAME/backup"
+CHECKSERVER="/home/$USERNAME/CheckServer"
+JMXPWFILE="<path to jmx password file>"
+CRASHLOG_DB_PATH='<path to dump crash logs>'
+JAVA_HOME="/usr/local/lib/jrockit"
+
+MEMORY_OPTS="-Xmx8G -Xms8G"
+JAVA_OPTIONS="-XX:FlightRecorderOptions=defaultrecording=true,disk=true,repository=/home/$USERNAME/jfr/,maxage=30m,settings=profile"
+JMX_OPTIONS="-Dcom.sun.management.jmxremote -Dcom.sun.management.jmxremote.ssl=false -Dcom.sun.management.jmxremote.port=$JMXPORT -Dcom.sun.management.jmxremote.password.file=$JMXPWFILE"
+
+INVOCATION="${JAVA_HOME}/bin/java ${MEMORY_OPTS} ${JAVA_OPTIONS} ${JMX_OPTIONS} -jar $SERVICE nogui"
+BACKUPARCHIVEPATH=$BACKUPPATH/archive
+BACKUPDIR=$(date +%b_%Y)
+PORT=$(grep server-port $MCPATH/server.properties | cut -d '=' -f 2)
+
+if [ -z "$PORT" ]; then
+	PORT=25565
+fi
+
+# Settings end
+
+if [ $(whoami) != $USERNAME ]; then
+	su $USERNAME -l -c "$(readlink -f $0) $*"
+	exit $?
+fi
 
 is_running() {
-	if ps ax | grep -v grep | grep java | grep -v -i SCREEN | grep $SERVICE > /dev/null
-	then
-		return 0
-	else
+	if [ ! -e $MCPATH/java.pid ]; then
 		return 1
 	fi
+	
+	pid=$(cat $MCPATH/java.pid)
+	if [ -z $pid ]; then
+		return 1
+	fi
+	
+	ps -eo "%p" | grep "^\\s*$pid\\s*\$" > /dev/null
+	return $?
 }
 
 mc_start() {
-  if is_running
-  then
-    echo "Tried to start but $SERVICE was already running!"
-    return 1
-  else
-    echo "$SERVICE was not running... starting."
-    cd $MCPATH
-    as_user "cd $MCPATH && screen -dmS minecraft bash -c '$INVOCATION 2>&1 | tee $CONSOLELOG'"
-    sleep 7
-    if is_running
-    then
-      echo "$SERVICE is now running."
-      return 0
-    else
-      echo "Could not start $SERVICE."
-      return 1
-    fi
-  fi
-}
-
-mc_startmonitor() {
-  echo "started monitor"
-  as_user "/usr/bin/daemon --name=minecraft_checkserver -- /home/minecraft/jrockit/bin/java -cp /home/minecraft/CheckServer CheckServer server-address server-port"
-}
-
-mc_saveoff() {
-        if is_running
-	then
-		echo "$SERVICE is running... suspending saves"
-		as_user "screen -p 0 -S minecraft -X eval 'stuff \"say SERVER BACKUP STARTING. Server going readonly...\"\015'"
-                as_user "screen -p 0 -S minecraft -X eval 'stuff \"save-off\"\015'"
-                as_user "screen -p 0 -S minecraft -X eval 'stuff \"save-all\"\015'"
-                sync
-		sleep 10
+	if is_running; then
+		echo "Tried to start but $SERVICE was already running!"
 	else
-                echo "$SERVICE was not running. Not suspending saves."
-	fi
-}
-
-mc_saveon() {
-        if is_running
-	then
-		echo "$SERVICE is running... re-enabling saves"
-                as_user "screen -p 0 -S minecraft -X eval 'stuff \"save-on\"\015'"
-                as_user "screen -p 0 -S minecraft -X eval 'stuff \"say SERVER BACKUP ENDED. Server going read-write...\"\015'"
-	else
-                echo "$SERVICE was not running. Not resuming saves."
-	fi
-}
-
-mc_kill() {
-	pid=`ps ax | grep -v grep | grep java | grep -i SCREEN | grep $SERVICE | awk '{ print $1 }'`
-
-	if [ -z $pid ]; then
-		echo "unable to retrieve pid"
-	else
-		echo "killing process with pid $pid"
-		kill $pid
-		sleep 2
-
-		if is_running; then
-			echo "$SERVICE could not be killed... still running"
+		echo "$SERVICE was not running... starting."
+		
+		cd $MCPATH
+		screen -dmS mc$PORT $INVOCATION &
+		
+		for (( i=0; i < 10; i++ )); do
+			screenpid=$(ps -eo '%p %a' | grep -v grep | grep -i screen | grep mc$PORT | awk '{print $1}')
+			javapid=$(ps -eo '%P %p' | grep "^\\s*$screenpid " | awk '{print $2}')
+			
+			if [[ -n "$screenpid" && -n "$javapid" ]]; then
+				break
+			fi
+			
+			sleep 1
+		done
+		
+		if [[ -n "$screenpid" && -n "$javapid" ]]; then
+			echo "$SERVICE is now running."
+			echo "$javapid" > $MCPATH/java.pid
+			echo "$screenpid.mc$PORT" > $MCPATH/screen.name
 		else
-			echo "$SERVICE killed"
+			echo "Could not start $SERVICE."
 		fi
 	fi
 }
 
+mc_startmonitor() {
+	if [ -z $CHECKSERVER ]; then
+		echo "started monitor"
+		/usr/bin/daemon --name=minecraft_checkserver -- $JAVA_HOME/bin/java -cp $CHECKSERVER CheckServer localhost $PORT
+	fi
+}
+
+mc_saveoff() {
+	if is_running; then
+		echo "$SERVICE is running... suspending saves"
+		mc_exec "say SERVER BACKUP STARTING. Server going readonly..."
+		mc_exec "save-off"
+		mc_exec "save-all"
+		sync
+		sleep 10
+	else
+		echo "$SERVICE was not running. Not suspending saves."
+	fi
+}
+
+mc_saveon() {
+	if is_running; then
+		echo "$SERVICE is running... re-enabling saves"
+		mc_exec "save-on"
+		mc_exec "say SERVER BACKUP ENDED. Server going read-write..."
+	else
+		echo "$SERVICE was not running. Not resuming saves."
+	fi
+}
+
+mc_kill() {
+	pid=$(cat $MCPATH/java.pid)
+
+	echo "terminating process with pid $pid"
+	kill $pid
+	
+	for (( i=0; i < 10; i++ )); do
+		is_running || break
+		sleep 1
+	done
+
+	if is_running; then
+		echo "$SERVICE could not be terminated, killing..."
+		kill -SIGKILL $pid
+		echo "$SERVICE killed"
+	else
+		echo "$SERVICE terminated"
+	fi
+}
+
 mc_stop() {
-	if is_running
-        then
-                echo "$SERVICE is running... stopping."
+	if is_running; then
+		echo "$SERVICE is running... stopping."
 
-                as_user "screen -p 0 -S minecraft -X eval 'stuff \"say SERVER SHUTTING DOWN IN 10 SECONDS. Saving map...\"\015'"
-                as_user "screen -p 0 -S minecraft -X eval 'stuff \"save-all\"\015'"
-                sleep 10
-                as_user "screen -p 0 -S minecraft -X eval 'stuff \"stop\"\015'"
-                sleep 12
-
-        else
-                echo "$SERVICE was not running."
-        fi
-        if is_running
-        then
-                echo "$SERVICE could not be shut down cleanly... still running."
+		mc_exec "say SERVER SHUTTING DOWN IN 10 SECONDS. Saving map..."
+		mc_exec "save-all"
+		sleep 10
+		mc_exec "stop"
+		
+		for (( i=0; i < 20; i++ )); do
+			is_running || break
+			sleep 1
+		done
+	else
+		echo "$SERVICE was not running."
+	fi
+	
+	if is_running; then
+		echo "$SERVICE could not be shut down cleanly... still running."
 		mc_kill
-        else
-                echo "$SERVICE is shut down."
-        fi
+	else
+		echo "$SERVICE is shut down."
+	fi
+	
+	rm $MCPATH/java.pid
+	rm $MCPATH/screen.name
 }
 
 mc_stopmonitor() {
-        as_user "/usr/bin/daemon --name=minecraft_checkserver --stop"
+	if [ -z $CHECKSERVER ]; then
+		/usr/bin/daemon --name=minecraft_checkserver --stop
+	fi
 }
 
 mc_backup() {
 	echo "Backing up minecraft world"
 
-	[ -d $BACKUPPATH/$BACKUPDIR ] || as_user "mkdir $BACKUPPATH/$BACKUPDIR"
+	[ -d "$BACKUPPATH/$BACKUPDIR" ] || mkdir -p "$BACKUPPATH/$BACKUPDIR"
 
-	as_user "rdiff-backup $MCPATH $BACKUPPATH/$BACKUPDIR"
-
+	rdiff-backup $MCPATH "$BACKUPPATH/$BACKUPDIR"
+	
 	echo "Backup complete"
 }
 
-mc_execservercmd() {
-	if is_running
-        then
-		as_user "screen -p 0 -S minecraft -X eval 'stuff \"$1\"\015'"
+mc_thinoutbackup() {
+	if (($(date +%H) == 0)) && (($(date +%M) < 15)); then
+		archivedate=$(date --date="7 days ago")
+		
+		echo "Thinning backups created $archivedate out"
+		
+		archivedateunix=$(date --date="$archivedate" +%s)
+		archivesourcedir=$BACKUPPATH/$(date --date="$archivedate" +%b_%Y)
+		archivesource=$archivesourcedir/rdiff-backup-data/increments.$(date --date="$archivedate" +%Y-%m-%dT%H):0*.dir
+		archivesource=$(echo $archivesource)
+		archivedest=$BACKUPARCHIVEPATH/$(date --date="$archivedate" +%b_%Y)
+		
+		if [[ ! -f $archivesource ]]; then
+			echo "Nothing to be done"
+		else
+			tempdir=$(mktemp -d)
+			
+			if [[ ! $tempdir =~ ^/tmp ]]; then
+				echo "invalid tmp dir $tempdir"
+			else
+				rdiff-backup $archivesource $tempdir
+				rdiff-backup --current-time $archivedateunix $tempdir $archivedest
+				rm -R "$tempdir"
+				
+				rdiff-backup --remove-older-than 7D --force $archivesourcedir
+				
+				echo "done"
+			fi
+		fi
+	fi
+}
+
+mc_exec() {
+	if is_running; then
+		screen -p 0 -S $(cat $MCPATH/screen.name) -X stuff "$@$(printf \\r)"
 	else
 		echo "$SERVICE was not running. Not executing command."
 	fi
 }
 
 mc_dumpcrashlogs() {
-	if is_running
-	then
-		as_user "cp $MCPATH/crash-reports/* $CRASHLOG_DB_PATH"
-		as_user "mv $MCPATH/crash-reports/* $MCPATH/crash-reports.archive/"
+	if is_running; then
+		cp $MCPATH/crash-reports/* $CRASHLOG_DB_PATH
+		mv $MCPATH/crash-reports/* $MCPATH/crash-reports.archive/
 	fi
 }
 
@@ -195,9 +251,11 @@ case "$1" in
     mc_saveoff
     mc_backup
     mc_saveon
+    mc_thinoutbackup
     ;;
-  execservercmd)
-    mc_execservercmd "$2"
+  exec)
+    shift
+    mc_exec "$@"
     ;;
   dumpcrashlogs)
     mc_dumpcrashlogs
@@ -212,7 +270,7 @@ case "$1" in
     ;;
 
   *)
-  echo "Usage: /etc/init.d/minecraft {start|stop|restart|backup|execservercmd|dumpcrashlogs|status}"
+  echo "Usage: $(readlink -f $0) {start|stop|restart|backup|exec|dumpcrashlogs|status}"
   exit 1
   ;;
 esac
