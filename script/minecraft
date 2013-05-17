@@ -100,7 +100,7 @@ mc_startmonitor() {
 mc_saveoff() {
 	if is_running; then
 		echo "$SERVICE is running... suspending saves"
-		mc_exec "say SERVER BACKUP STARTING. Server going readonly..."
+		mc_exec "say §6§lBackup: §r§eBacking up world..."
 		mc_exec "save-off"
 		mc_exec "save-all"
 		sync
@@ -114,7 +114,7 @@ mc_saveon() {
 	if is_running; then
 		echo "$SERVICE is running... re-enabling saves"
 		mc_exec "save-on"
-		mc_exec "say SERVER BACKUP ENDED. Server going read-write..."
+		mc_exec "say §6§lBackup: §r§eBackup complete..."
 	else
 		echo "$SERVICE was not running. Not resuming saves."
 	fi
