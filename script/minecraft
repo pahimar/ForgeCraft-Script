@@ -218,7 +218,13 @@ mc_thinoutbackup() {
 
 mc_exec() {
 	if is_running; then
-		screen -p 0 -S $(cat $MCPATH/screen.name) -X stuff "$@$(printf \\r)"
+		execargs=""
+		for arg in $@
+		do
+			execargs+="$arg "
+		done
+		
+		screen -p 0 -S $(cat $MCPATH/screen.name) -X stuff "$execargs$(printf \\r)"
 	else
 		echo "$SERVICE was not running. Not executing command."
 	fi
