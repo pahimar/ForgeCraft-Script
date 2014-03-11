@@ -11,86 +11,135 @@
 # Default-Start:  2 3 4 5
 # Default-Stop:   0 1 6
 # Short-Description:    Minecraft server
-# Description:    Starts the minecraft server
+# Description:    Init script for linux Minecraft Server
 ### END INIT INFO
 
-# Settings start
+###### CONFIGURATION SETTINGS ######
+
+# Username of the account to use
 USERNAME="<username>"
-JMXPORT=<jmx port>
 
-SERVICE='forge_latest.zip'
-MCPATH="/home/$USERNAME/minecraft"
-BACKUPPATH="/home/$USERNAME/backup"
-CHECKSERVER="/home/$USERNAME/CheckServer"
+# JMX Settings
+JMXPORT="<jmx port>"
 JMXPWFILE="<path to jmx password file>"
-CRASHLOG_DB_PATH='<path to dump crash logs>'
-JAVA_HOME="/usr/local/lib/jrockit"
-
-MEMORY_OPTS="-Xmx8G -Xms8G"
-JAVA_OPTIONS="-XX:FlightRecorderOptions=defaultrecording=true,disk=true,repository=/home/$USERNAME/jfr/,maxage=30m,settings=profile"
 JMX_OPTIONS="-Dcom.sun.management.jmxremote -Dcom.sun.management.jmxremote.ssl=false -Dcom.sun.management.jmxremote.port=$JMXPORT -Dcom.sun.management.jmxremote.password.file=$JMXPWFILE"
 
-INVOCATION="${JAVA_HOME}/bin/java ${MEMORY_OPTS} ${JAVA_OPTIONS} ${JMX_OPTIONS} -jar $SERVICE nogui"
+# Service to launch
+SERVICE='forge_latest.zip'
+
+# Path to the Minecraft Directory
+MCPATH="/home/${USERNAME}/minecraft"
+
+# Path to the Backup Directory
+BACKUPPATH="/home/${USERNAME}/backup"
+
+# Path to the Check Server Executable
+CHECKSERVER="/home/${USERNAME}/CheckServer"
+
+# Path to the Crash Log Directory
+CRASHLOG_DB_PATH='<path to dump crash logs>'
+
+# Path to Java
+JAVA_HOME="/usr/local/lib/jrockit"
+
+# Memory Options
+MEMINIT="8G"
+MEMMAX="8G"
+
+# Default Java Options
+JAVA_OPTIONS="-XX:FlightRecorderOptions=defaultrecording=true,disk=true,repository=/home/$USERNAME/jfr/,maxage=30m,settings=profile"
+
+# Backup Settings
 BACKUPARCHIVEPATH=$BACKUPPATH/archive
 BACKUPDIR=$(date +%b_%Y)
+
+###### END CONFIGURATION SETTINGS ######
+
+INVOCATION="${JAVA_HOME}/bin/java -Xmx${MEMMAX} -Xms${MEMINIT} ${JAVA_OPTIONS} ${JMX_OPTIONS} -jar $SERVICE nogui"
 PORT=$(grep server-port $MCPATH/server.properties | cut -d '=' -f 2)
 
 if [ -z "$PORT" ]; then
 	PORT=25565
 fi
 
-# Settings end
-
-if [ $(whoami) != $USERNAME ]; then
-	su $USERNAME -l -c "$(readlink -f $0) $*"
-	exit $?
-fi
-
-is_running() {
-	if [ ! -e $MCPATH/java.pid ]; then
-		return 1
+ME=`whoami`
+as_user() {
+	if [ $ME == $USERNAME ] ; then
+		bash -c "$1"
+	else
+		su $USERNAME -s /bin/bash -c "$1"
 	fi
-	
-	pid=$(cat $MCPATH/java.pid)
-	if [ -z $pid ]; then
-		return 1
-	fi
-	
-	ps -eo "%p" | grep "^\\s*$pid\\s*\$" > /dev/null
-	return $?
 }
 
-mc_start() {
-	if is_running; then
-		echo "Tried to start but $SERVICE was already running!"
-	else
-		echo "$SERVICE was not running... starting."
-		
-		cd $MCPATH
-		screen -dmS mc$PORT $INVOCATION &
-		
-		for (( i=0; i < 10; i++ )); do
-			screenpid=$(ps -eo '%p %a' | grep -v grep | grep -i screen | grep mc$PORT | awk '{print $1}')
-			javapid=$(ps -eo '%P %p' | grep "^\\s*$screenpid " | awk '{print $2}')
-			
-			if [[ -n "$screenpid" && -n "$javapid" ]]; then
-				break
+is_running() {
+	# Check to see if the Minecraft server screen session exists, return true if exists.
+	pidfile=${MCPATH}/mc${PORT}.pid
+
+	if [ -r "$pidfile" ]
+	then
+		pid=$(head -1 $pidfile)
+		if ps ax | grep -v grep | grep ${pid} | grep "$mc${PORT}" > /dev/null
+		then
+			return 0
+		else 
+			if [ -z "$isInStop" ]
+			then
+				if [ -z "$roguePrinted" ]
+				then
+					roguePrinted=1
+					echo "Rogue pidfile found!"
+				fi
 			fi
-			
-			sleep 1
-		done
-		
-		if [[ -n "$screenpid" && -n "$javapid" ]]; then
-			echo "$SERVICE is now running."
-			echo "$javapid" > $MCPATH/java.pid
-			echo "$screenpid.mc$PORT" > $MCPATH/screen.name
+			return 1
+		fi
+	else
+		if ps ax | grep -v grep | grep "mc{PORT} ${INVOCATION}" > /dev/null
+		then
+			echo "No pidfile found, but server's running."
+			echo "Re-creating the pidfile."
+
+			pid=$(ps ax | grep -v grep | grep "mc${PORT} ${INVOCATION}" | cut -f1 -d' ')
+			check_permissions
+			as_user "echo $pid > $pidfile"
+
+			return 0
 		else
-			echo "Could not start $SERVICE."
+			return 1
 		fi
 	fi
 }
 
+mc_start() {
+	# Attempt to start the Minecraft server
+	pidfile=${MCPATH}/mc${PORT}.pid
+	check_permissions
+
+	as_user "cd $MCPATH && screen -dmS mc$PORT $INVOCATION"
+	as_user "screen -list | grep '\.$SCREEN' | cut -f1 -d'.' | tr -d -c 0-9 > $pidfile"
+
+	#
+	# Waiting for the server to start
+	#
+	seconds=0
+	until is_running 
+	do
+		sleep 1
+		seconds=$seconds+1
+		if [[ $seconds -eq 5 ]]
+		then
+			echo "Still not running, waiting a while longer..."
+		fi
+		if [[ $seconds -ge 120 ]]
+		then
+			echo "Failed to start, aborting."
+			exit 1
+		fi
+	done	
+	echo "$SERVICE is running."
+}
+
 mc_startmonitor() {
+        # Start monitor
 	if [ -z $CHECKSERVER ]; then
 		echo "started monitor"
 		/usr/bin/daemon --name=minecraft_checkserver -- $JAVA_HOME/bin/java -cp $CHECKSERVER CheckServer localhost $PORT
@@ -98,6 +147,7 @@ mc_startmonitor() {
 }
 
 mc_saveoff() {
+        # Suspend minecraft from saving, to backup world data.
 	if is_running; then
 		echo "$SERVICE is running... suspending saves"
 		mc_exec "say SERVER BACKUP STARTING. Server going readonly..."
@@ -111,6 +161,7 @@ mc_saveoff() {
 }
 
 mc_saveon() {
+        # Enable minecraft saving
 	if is_running; then
 		echo "$SERVICE is running... re-enabling saves"
 		mc_exec "save-on"
@@ -121,6 +172,7 @@ mc_saveon() {
 }
 
 mc_kill() {
+        # Kill minecraft process
 	pid=$(cat $MCPATH/java.pid)
 
 	echo "terminating process with pid $pid"
@@ -141,31 +193,47 @@ mc_kill() {
 }
 
 mc_stop() {
-	if is_running; then
-		echo "$SERVICE is running... stopping."
+        # Stops the server
+        if is_running; then
+        	echo "$SERVICE is running... stopping."
 
+		pidfile=${MCPATH}/mc${PORT}.pid
 		mc_exec "say SERVER SHUTTING DOWN IN 10 SECONDS. Saving map..."
 		mc_exec "save-all"
 		sleep 10
 		mc_exec "stop"
-		
-		for (( i=0; i < 20; i++ )); do
-			is_running || break
-			sleep 1
+	
+		seconds=0
+		isInStop=1
+		while is_running
+		do
+			sleep 1 
+			seconds=$seconds+1
+			if [[ $seconds -eq 10 ]]
+			then
+				echo "$SERVICE Still not shut down, waiting a while longer..."
+			fi
+			if [[ $seconds -ge 120 ]]
+			then
+				logger -t minecraft-init "Failed to shut down server, aborting."
+				echo "$SERVICE failed to shutdown..."
+				exit 1
+			fi
 		done
+		as_user "rm $pidfile"
+		unset isInStop
+		
+		if is_running; then
+			echo "$SERVICE could not be shut down cleanly... still running."
+			mc_kill
+		else
+			echo "$SERVICE is shut down."
+		fi
+		as_user "rm $pidfile"
+
 	else
-		echo "$SERVICE was not running."
-	fi
-	
-	if is_running; then
-		echo "$SERVICE could not be shut down cleanly... still running."
-		mc_kill
-	else
-		echo "$SERVICE is shut down."
-	fi
-	
-	rm $MCPATH/java.pid
-	rm $MCPATH/screen.name
+        	echo "$SERVICE was not running."
+        fi
 }
 
 mc_stopmonitor() {
@@ -218,7 +286,7 @@ mc_thinoutbackup() {
 
 mc_exec() {
 	if is_running; then
-		screen -p 0 -S $(cat $MCPATH/screen.name) -X stuff "$@$(printf \\r)"
+		as_user "screen -p 0 -S mc$PORT -X eval 'stuff \"$(eval echo $FORMAT)\"\015'"
 	else
 		echo "$SERVICE was not running. Not executing command."
 	fi
@@ -229,6 +297,37 @@ mc_dumpcrashlogs() {
 		cp $MCPATH/crash-reports/* $CRASHLOG_DB_PATH
 		mv $MCPATH/crash-reports/* $MCPATH/crash-reports.archive/
 	fi
+}
+
+function ask {
+    while true; do
+
+        if [ "${2:-}" = "Y" ]; then
+            prompt="Y/n"
+            default=Y
+        elif [ "${2:-}" = "N" ]; then
+            prompt="y/N"
+            default=N
+        else
+            prompt="y/n"
+            default=
+        fi
+
+        # Ask the question
+        read -p "$1 [$prompt] " REPLY
+
+        # Default?
+        if [ -z "$REPLY" ]; then
+            REPLY=$default
+        fi
+
+        # Check if the reply is valid
+        case "$REPLY" in
+            Y*|y*) return 0 ;;
+            N*|n*) return 1 ;;
+        esac
+
+    done
 }
 
 #Start-Stop here
@@ -257,6 +356,19 @@ case "$1" in
     shift
     mc_exec "$@"
     ;;
+  console)
+    # shows the mine craft console window
+    if is_running; then
+      echo "This command will load the screen that the server is running under"
+      echo "To exit the screen press CTRL+A D"
+      
+      if ask "Do you wish to load the screen?" N; then
+        as_user "script /dev/null -c 'screen -p 0 -S mc$PORT -dr'"
+      fi
+    else
+      echo "$SERVICE not running."
+    fi
+    ;;
   dumpcrashlogs)
     mc_dumpcrashlogs
     ;;
@@ -270,7 +382,7 @@ case "$1" in
     ;;
 
   *)
-  echo "Usage: $(readlink -f $0) {start|stop|restart|backup|exec|dumpcrashlogs|status}"
+  echo "Usage: $(readlink -f $0) {start|stop|restart|backup|exec|dumpcrashlogs|status|console}"
   exit 1
   ;;
 esac
