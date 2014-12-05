@@ -63,6 +63,7 @@ is_running() {
 mc_start() {
 	if is_running; then
 		echo "Tried to start but $SERVICE was already running!"
+		return 1
 	else
 		echo "$SERVICE was not running... starting."
 		
@@ -84,8 +85,10 @@ mc_start() {
 			echo "$SERVICE is now running."
 			echo "$javapid" > $MCPATH/java.pid
 			echo "$screenpid.mc$PORT" > $MCPATH/screen.name
+			return 0
 		else
 			echo "Could not start $SERVICE."
+			return 1
 		fi
 	fi
 }
