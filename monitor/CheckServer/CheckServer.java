@@ -12,6 +12,7 @@ public class CheckServer {
 		int port = Integer.parseInt(args[1]);
 		
 		int failCount = 0;
+		long lastrestarttime = 0;
 	
 		for (;;) {
 			Socket socket = null;
@@ -63,6 +64,14 @@ public class CheckServer {
 				failCount++;
 				
 				if (failCount >= 10) {
+					failCount = 0;
+
+					if (lastrestarttime + 600000 > System.currentTimeMillis()) {
+						//If restarted in the last 10 minutes, give up.
+						//System.out.println("CheckServer: I give up!");
+						break; //We break so that finally is still run.
+					}
+					lastrestarttime = System.currentTimeMillis();
 					try {
 						//System.out.println("Restart");
 						String command[] = { "/bin/bash", "service", "minecraft", "restart" };
